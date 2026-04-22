@@ -571,6 +571,71 @@ function daysBetween(d1Str, d2Str) {
   return Math.round((d2-d1)/(1000*60*60*24));
 }
 
+// ─── PROCESS TIME CALCULATION HELPERS ──────────────────────────────────────
+// Calculate hours between two timestamps (YYYY-MM-DD HH:MM:SS format)
+function hoursBetween(t1Str, t2Str) {
+  if(!t1Str || !t2Str) return null;
+  try {
+    const d1 = new Date(t1Str.replace(' ', 'T'));
+    const d2 = new Date(t2Str.replace(' ', 'T'));
+    if(isNaN(d1) || isNaN(d2)) return null;
+    return Math.round((d2 - d1) / (1000 * 60 * 60) * 100) / 100; // hours with 2 decimals
+  } catch {
+    return null;
+  }
+}
+
+// Calculate minutes between two timestamps
+function minutesBetween(t1Str, t2Str) {
+  if(!t1Str || !t2Str) return null;
+  try {
+    const d1 = new Date(t1Str.replace(' ', 'T'));
+    const d2 = new Date(t2Str.replace(' ', 'T'));
+    if(isNaN(d1) || isNaN(d2)) return null;
+    return Math.round((d2 - d1) / (1000 * 60));
+  } catch {
+    return null;
+  }
+}
+
+// Calculate process cycle time (time from PO date to current timestamp)
+function calculateProcessCycleTime(poDate, currentTs) {
+  if(!poDate || !currentTs) return null;
+  try {
+    const d1 = new Date(poDate.substring(0, 10));
+    const d2 = new Date(currentTs.substring(0, 10));
+    if(isNaN(d1) || isNaN(d2)) return null;
+    return Math.round((d2 - d1) / (1000 * 60 * 60 * 24));
+  } catch {
+    return null;
+  }
+}
+
+// Calculate vendor aging (days since last timestamp to today)
+function calculateVendorAging(lastTs, today) {
+  if(!lastTs || !today) return null;
+  try {
+    const d1 = new Date(lastTs.substring(0, 10));
+    const d2 = new Date(today.substring(0, 10));
+    if(isNaN(d1) || isNaN(d2)) return null;
+    const days = Math.round((d2 - d1) / (1000 * 60 * 60 * 24));
+    return days >= 0 ? days : null;
+  } catch {
+    return null;
+  }
+}
+
+// Check SLA violation (> 2 days pending)
+function isSLAViolation(agingDays, threshold = 2) {
+  return agingDays !== null && agingDays > threshold;
+}
+
+// Calculate process efficiency: activeTime / totalTime
+function calculateProcessEfficiency(activeTime, totalTime) {
+  if(!totalTime || totalTime === 0) return 0;
+  return Math.round((activeTime / totalTime) * 100);
+}
+
 function getStageColor(stage) {
   if(!stage) return '#3d6080';
   const s = stage.toUpperCase();
@@ -1346,7 +1411,33 @@ function App() {
       stats.minPending = stats.pendingDays.length > 0 ? Math.min(...stats.pendingDays) : 0;
       stats.stale = stats.pendingDays.filter(d => d > TARGET_DAYS).length;
       stats.avgFromPO = stats.fromPODays.length > 0 ? Math.round(stats.totalFromPO / stats.fromPODays.length) : null;
+      
+      // ─ NEW: SLA Tracking (>2 days pending = violation) ──────────────────
+      stats.slaViolations = stats.pendingDays.filter(d => d > 2).length;
+      stats.slaViolationRate = stats.count > 0 ? Math.round((stats.slaViolations / stats.count) * 100) : 0;
+      
+      // ─ NEW: Process Efficiency (items completed / total items attempted)
+      const completedItems = stats.items.filter(i => ['READY','STORES','STOCK'].includes(i.stage)).length;
+      stats.processEfficiency = stats.count > 0 ? Math.round((completedItems / stats.count) * 100) : 0;
+      
+      // ─ NEW: Average active time = avgFromPO (days from PO to current stage)
+      stats.avgActiveTime = stats.avgFromPO || 0;
     });
+
+    // ── NEW: Vendor Process Bottleneck Detection ────────────────────────────
+    // Find vendor operations with highest avg pending days (worst bottleneck)
+    const vendorBottlenecks = Object.values(vendorStats)
+      .map(v => ({
+        vendor: v.vendor,
+        count: v.count,
+        avgPending: v.avgPending,
+        score: v.avgPending * Math.log(v.count + 1), // weighted score
+        slaViolations: v.slaViolations,
+        efficiency: v.processEfficiency,
+      }))
+      .sort((a, b) => b.score - a.score);
+    
+    const topVendorBottleneck = vendorBottlenecks[0] || null;
 
     // Old vendor time map (kept for backward compatibility with existing displays)
     const vendorTimeMap = {};
@@ -1371,7 +1462,21 @@ function App() {
           const d = dateDiff(i.timestamp, today);
           return d !== null && d > TARGET_DAYS;
         }).length;
-        return { ...v, pct: Math.round(v.count/Math.max(vendorTotal,1)*100), avgDays, maxDays, delayed };
+        // Add new metrics from vendorStats
+        const stats = vendorStats[v.code] || {};
+        return { 
+          ...v, 
+          pct: Math.round(v.count/Math.max(vendorTotal,1)*100), 
+          avgDays, 
+          maxDays, 
+          delayed,
+          // NEW METRICS
+          avgFromPO: stats.avgFromPO || null,
+          slaViolations: stats.slaViolations || 0,
+          slaViolationRate: stats.slaViolationRate || 0,
+          processEfficiency: stats.processEfficiency || 0,
+          avgActiveTime: stats.avgActiveTime || 0,
+        };
       });
 
     // ── SC completion times ──────────────────────────────────────────────────
@@ -1386,7 +1491,7 @@ function App() {
       totalItems, ready, stores, wip, inhouse, vendor,
       onTime, delayed, onTimePct, totalPOs,
       stageCounts, stageWIP, bottleneck, bottleneckStages, topBottleneck,
-      vendors, vendorTotal, vendorStats,
+      vendors, vendorTotal, vendorStats, topVendorBottleneck,
       stageCycleTimes, stageAvgToReach, avgOverallCycle,
       scCompletion, scDailyOutput,
       completeSets, storeSets, readySets,
@@ -2317,6 +2422,7 @@ function SCPage({kpis, scGroups}) {
 
 // ─── VENDOR PAGE ───────────────────────────────────────────────────────────────
 function VendorPage({kpis, data}) {
+  const [selectedSC, setSelectedSC] = useState(null);
   const vendorBarRef  = useRef();
   const vendorTimeRef = useRef();
   const vendors = kpis.vendors;
@@ -2427,6 +2533,72 @@ function VendorPage({kpis, data}) {
         </div>
       </div>
 
+      {/* NEW: Process Cycle Time & Efficiency Metrics */}
+      <div style={{background:'var(--bg-card)',border:'1px solid var(--border)',borderRadius:10,padding:18,marginBottom:16}}>
+        <div className="chart-title">⏱ Process Cycle Time & Efficiency by Vendor Operation</div>
+        <div className="chart-sub">AVERAGE TIME FROM PO RECEIPT · PROCESS COMPLETION RATE · SLA VIOLATIONS (2d+ PENDING)</div>
+        <div className="vendor-bar-wrap" style={{marginTop:12}}>
+          {[...vendors].sort((a,b)=>(b.avgDays||0)-(a.avgDays||0)).map((v,i)=>{
+            return (
+              <div key={i} style={{display:'flex',alignItems:'center',gap:12,padding:'10px 0',borderBottom:'1px solid rgba(26,58,92,0.4)'}}>
+                <div style={{width:90,fontFamily:'Share Tech Mono',fontSize:11,color:'var(--accent1)',fontWeight:700}}>{v.code}</div>
+                <div style={{flex:0.25}}>
+                  <div style={{fontSize:10,color:'var(--text-muted)',marginBottom:4}}>Avg Process Time</div>
+                  <div style={{fontFamily:'Rajdhani',fontSize:16,fontWeight:700,color:'var(--accent4)'}}>{v.avgDays!=null?`${v.avgDays}d`:'—'}</div>
+                </div>
+                <div style={{flex:0.25}}>
+                  <div style={{fontSize:10,color:'var(--text-muted)',marginBottom:4}}>Completion Rate</div>
+                  <div style={{fontFamily:'Rajdhani',fontSize:16,fontWeight:700,color:'var(--success)'}}>{v.processEfficiency!=null?`${v.processEfficiency}%`:'—'}</div>
+                </div>
+                <div style={{flex:0.25}}>
+                  <div style={{fontSize:10,color:'var(--text-muted)',marginBottom:4}}>SLA Violations (2d+)</div>
+                  <div style={{fontFamily:'Rajdhani',fontSize:16,fontWeight:700,color:v.slaViolations>0?'var(--danger)':'var(--success)'}}>{v.slaViolations||0}</div>
+                </div>
+                <div style={{flex:0.25}}>
+                  <div style={{fontSize:10,color:'var(--text-muted)',marginBottom:4}}>Violation Rate</div>
+                  <div style={{fontFamily:'Rajdhani',fontSize:16,fontWeight:700,color:v.slaViolationRate>20?'var(--danger)':v.slaViolationRate>10?'var(--warning)':'var(--success)'}}>{v.slaViolationRate!=null?`${v.slaViolationRate}%`:'—'}</div>
+                </div>
+                <div style={{flex:0.2}}>
+                  <span className={`status-pill ${v.slaViolations===0?'badge-green':v.slaViolationRate>20?'badge-red':'badge-yellow'}`}>
+                    {v.slaViolations===0?'✓ COMPLIANT':v.slaViolationRate>20?'⚠ CRITICAL':'⚡ WARNING'}
+                  </span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* NEW: Bottleneck Detection */}
+      {kpis.topVendorBottleneck && (
+        <div style={{background:'linear-gradient(135deg,rgba(255,61,90,0.1),rgba(255,107,53,0.08))',border:'1px solid rgba(255,61,90,0.3)',borderRadius:10,padding:18,marginBottom:16}}>
+          <div className="chart-title" style={{color:'var(--danger)'}}>⚠️ Vendor Bottleneck Alert</div>
+          <div className="chart-sub">HIGHEST RISK VENDOR OPERATION</div>
+          <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:16,marginTop:14}}>
+            <div>
+              <div style={{fontSize:11,color:'var(--text-muted)',marginBottom:6}}>Bottleneck Operation</div>
+              <div style={{fontFamily:'Rajdhani',fontSize:24,fontWeight:700,color:'var(--danger)'}}>{kpis.topVendorBottleneck.vendor}</div>
+            </div>
+            <div>
+              <div style={{fontSize:11,color:'var(--text-muted)',marginBottom:6}}>Avg Pending Days</div>
+              <div style={{fontFamily:'Rajdhani',fontSize:24,fontWeight:700,color:'var(--accent4)'}}>{kpis.topVendorBottleneck.avgPending}d</div>
+            </div>
+            <div>
+              <div style={{fontSize:11,color:'var(--text-muted)',marginBottom:6}}>SLA Violations</div>
+              <div style={{fontFamily:'Rajdhani',fontSize:24,fontWeight:700,color:'var(--danger)'}}>{kpis.topVendorBottleneck.slaViolations}</div>
+            </div>
+            <div>
+              <div style={{fontSize:11,color:'var(--text-muted)',marginBottom:6}}>Process Efficiency</div>
+              <div style={{fontFamily:'Rajdhani',fontSize:24,fontWeight:700,color:'var(--warning)'}}>{kpis.topVendorBottleneck.efficiency}%</div>
+            </div>
+          </div>
+          <div style={{marginTop:12,fontSize:12,color:'var(--text-secondary)',fontStyle:'italic'}}>
+            This vendor operation has the highest bottleneck score and requires immediate attention. Consider process optimization or resource reallocation.
+          </div>
+        </div>
+      )}
+
+
       {/* Full vendor detail table */}
       <div className="table-card">
         <div className="table-header"><div className="chart-title">Full Vendor Evaluation Table</div></div>
@@ -2436,6 +2608,7 @@ function VendorPage({kpis, data}) {
               <tr>
                 <th>VENDOR OP</th><th>ITEMS</th><th>% SHARE</th>
                 <th>AVG PENDING DAYS</th><th>MAX PENDING</th><th>DELAYED (&gt;21d)</th>
+                <th>PROCESS CYCLE</th><th>EFFICIENCY</th><th>SLA VIOLATIONS</th>
                 <th>LAST UPDATE</th><th>RATING</th><th>SAMPLE PRODUCTS</th>
               </tr>
             </thead>
@@ -2459,6 +2632,9 @@ function VendorPage({kpis, data}) {
                     <td style={{fontFamily:'Rajdhani',fontWeight:700,fontSize:18,color:overdue?'var(--danger)':'var(--warning)'}}>{v.avgDays!=null?`${v.avgDays}d`:'—'}</td>
                     <td style={{fontFamily:'Rajdhani',fontWeight:700,fontSize:16,color:'var(--accent4)'}}>{v.maxDays!=null?`${v.maxDays}d`:'—'}</td>
                     <td style={{color:v.delayed>0?'var(--danger)':'var(--success)',fontWeight:700,fontFamily:'Rajdhani',fontSize:17}}>{v.delayed}</td>
+                    <td style={{fontFamily:'Rajdhani',fontWeight:700,fontSize:14,color:'var(--accent1)'}}>{v.avgFromPO!=null?`${v.avgFromPO}d`:'—'}</td>
+                    <td style={{fontFamily:'Rajdhani',fontWeight:700,fontSize:14,color:v.processEfficiency>=80?'var(--success)':v.processEfficiency>=60?'var(--warning)':'var(--danger)'}}>{v.processEfficiency!=null?`${v.processEfficiency}%`:'—'}</td>
+                    <td style={{fontFamily:'Rajdhani',fontWeight:700,fontSize:14,color:v.slaViolations>0?'var(--danger)':'var(--success)'}}>{v.slaViolations||0}</td>
                     <td className="mono" style={{fontSize:10,color:'var(--text-muted)'}}>{latestTs?.substring(0,16)||'—'}</td>
                     <td style={{fontSize:12}}>{rating}</td>
                     <td style={{fontSize:10,color:'var(--text-muted)',maxWidth:220,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
@@ -2473,12 +2649,12 @@ function VendorPage({kpis, data}) {
       </div>
 
       <div className="table-card" style={{marginTop:16}}>
-        <div className="table-header"><div className="chart-title">Vendor Process Aging — Item Level (Today Reference)</div></div>
+        <div className="table-header"><div className="chart-title">Vendor Process Aging & Cycle Time — Item Level (Today Reference)</div></div>
         <div className="table-wrap">
           <table>
             <thead>
               <tr>
-                <th>SC</th><th>PO</th><th>PRODUCT</th><th>PROCESS</th><th>LAST UPDATE</th><th>PENDING DAYS</th><th>STATUS</th>
+                <th>SC</th><th>PO</th><th>PRODUCT</th><th>PROCESS</th><th>LAST UPDATE</th><th>PENDING DAYS</th><th>CYCLE TIME</th><th>SLA STATUS</th><th>STATUS</th>
               </tr>
             </thead>
             <tbody>
@@ -2486,21 +2662,36 @@ function VendorPage({kpis, data}) {
                 .filter(r=>r.inhouse==='VENDOR')
                 .map(r => {
                   const pendingDays = daysBetween(r.timestamp, todayRef);
-                  return { ...r, pendingDays };
+                  const cycleTime = calculateProcessCycleTime(r.poDate, r.timestamp);
+                  const slaViolation = pendingDays !== null && pendingDays > 2;
+                  return { ...r, pendingDays, cycleTime, slaViolation };
                 })
                 .sort((a,b)=>(b.pendingDays||0)-(a.pendingDays||0))
                 .slice(0,300)
                 .map((r,i)=>{
                   const pending = r.pendingDays;
+                  const cycle = r.cycleTime;
                   const overdue = pending != null && pending > TARGET_DAYS;
+                  const slaStatus = r.slaViolation ? 'VIOLATION' : 'COMPLIANT';
                   return (
                     <tr key={`${r.sc}-${r.po}-${i}`}>
-                      <td className="mono text-accent">{r.sc||'—'}</td>
+                      <td>
+                        <button
+                          onClick={()=>setSelectedSC(r.sc)}
+                          className="mono text-accent fw7"
+                          style={{background:'none',border:'none',padding:0,cursor:'pointer',textDecoration:'underline',fontSize:12}}
+                          title={`View all products for SC ${r.sc}`}
+                        >
+                          {r.sc||'—'}
+                        </button>
+                      </td>
                       <td style={{fontSize:11}}>{r.po||'—'}</td>
                       <td style={{fontSize:11,maxWidth:260,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{r.product||'—'}</td>
                       <td><span className="status-pill s-vendor">{r.currentStage||'UNKNOWN'}</span></td>
                       <td className="mono" style={{fontSize:10}}>{r.timestamp?.substring(0,16)||'—'}</td>
-                      <td style={{fontFamily:'Rajdhani',fontWeight:700,fontSize:18,color:overdue?'var(--danger)':'var(--success)'}}>{pending!=null?`${pending}d`:'—'}</td>
+                      <td style={{fontFamily:'Rajdhani',fontWeight:700,fontSize:14,color:overdue?'var(--danger)':'var(--success)'}}>{pending!=null?`${pending}d`:'—'}</td>
+                      <td style={{fontFamily:'Rajdhani',fontWeight:700,fontSize:14,color:'var(--accent1)'}}>{cycle!=null?`${cycle}d`:'—'}</td>
+                      <td><span className={`status-pill ${r.slaViolation?'badge-red':'badge-green'}`}>{slaStatus}</span></td>
                       <td><span className={`status-pill ${overdue?'badge-red':'badge-green'}`}>{overdue?'DELAYED':'ACTIVE'}</span></td>
                     </tr>
                   );
@@ -2509,11 +2700,138 @@ function VendorPage({kpis, data}) {
           </table>
         </div>
       </div>
+
+      {/* SC DETAIL MODAL - Shows all products in SC with processing status */}
+      {selectedSC && (
+        <div className="table-card" style={{marginTop:20,border:'2px solid var(--accent1)',boxShadow:'0 0 20px rgba(0,201,255,0.15)'}}>
+          <div className="table-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:12,backgroundColor:'rgba(0,201,255,0.05)'}}>
+            <div>
+              <div className="chart-title" style={{color:'var(--accent1)'}}>📦 SC {selectedSC} — Vendor Products & Processing Status</div>
+              <div className="chart-sub">
+                {data.filter(r=>r.sc===selectedSC && r.inhouse==='VENDOR').length} vendor items in this SC set
+              </div>
+            </div>
+            <button
+              onClick={()=>setSelectedSC(null)}
+              style={{background:'none',border:'1px solid var(--border)',color:'var(--text-muted)',borderRadius:6,padding:'6px 12px',cursor:'pointer',fontSize:11,fontWeight:600}}
+            >
+              CLOSE
+            </button>
+          </div>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>PO</th>
+                  <th>PRODUCT NAME</th>
+                  <th>TYPE</th>
+                  <th>PROCESS STAGE</th>
+                  <th>LAST UPDATE</th>
+                  <th>CYCLE TIME</th>
+                  <th>PENDING DAYS</th>
+                  <th>PROCESSING STATUS</th>
+                  <th>SLA COMPLIANCE</th>
+                  <th>OVERALL STATUS</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data
+                  .filter(r=>r.sc===selectedSC && r.inhouse==='VENDOR')
+                  .map((item, idx)=>{
+                    const cycleTime = calculateProcessCycleTime(item.poDate, item.timestamp);
+                    const today = new Date().toISOString().substring(0,10);
+                    const pendingDays = daysBetween(item.timestamp, today);
+                    const isDelayed = pendingDays !== null && pendingDays > 2;
+                    const isOnTime = cycleTime !== null && cycleTime <= 21;
+                    const completionStatus = ['READY','STORES','STOCK'].includes(item.currentStage);
+                    
+                    return (
+                      <tr key={`${selectedSC}-${idx}`} style={{backgroundColor:isDelayed?'rgba(255,61,90,0.08)':completionStatus?'rgba(0,230,118,0.08)':'transparent'}}>
+                        <td className="mono" style={{fontSize:11}}>{item.po}</td>
+                        <td style={{fontSize:11,maxWidth:280,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{item.product}</td>
+                        <td><span className="status-pill badge-blue">{item.type}</span></td>
+                        <td>
+                          <span className="status-pill s-vendor" style={{fontSize:10}}>
+                            {item.currentStage}
+                          </span>
+                        </td>
+                        <td className="mono" style={{fontSize:10,color:'var(--text-muted)'}}>{item.timestamp?.substring(0,16)||'—'}</td>
+                        <td style={{fontFamily:'Rajdhani',fontWeight:700,fontSize:13,color:'var(--accent1)'}}>
+                          {cycleTime!==null?`${cycleTime}d`:'—'}
+                        </td>
+                        <td style={{fontFamily:'Rajdhani',fontWeight:700,fontSize:13,color:isDelayed?'var(--danger)':'var(--success)'}}>
+                          {pendingDays!==null?`${pendingDays}d`:'—'}
+                        </td>
+                        <td>
+                          <span className={`status-pill ${completionStatus?'badge-green':'badge-yellow'}`} style={{fontSize:10}}>
+                            {completionStatus?'✓ COMPLETED':'⏳ PROCESSING'}
+                          </span>
+                        </td>
+                        <td>
+                          <span className={`status-pill ${isDelayed?'badge-red':'badge-green'}`} style={{fontSize:10}}>
+                            {isDelayed?'⚠ VIOLATION':'✓ COMPLIANT'}
+                          </span>
+                        </td>
+                        <td>
+                          <span className={`status-pill ${isOnTime&&completionStatus?'badge-green':isDelayed?'badge-red':'badge-yellow'}`} style={{fontSize:10}}>
+                            {isOnTime&&completionStatus?'🟢 ON-TIME':isDelayed?'🔴 DELAYED':completionStatus?'🟢 EARLY':'🟡 IN-PROGRESS'}
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Summary Stats for this SC */}
+          <div style={{padding:'16px 18px',backgroundColor:'rgba(0,201,255,0.02)',borderTop:'1px solid var(--border)'}}>
+            <div style={{display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:20}}>
+              {(() => {
+                const scItems = data.filter(r=>r.sc===selectedSC && r.inhouse==='VENDOR');
+                const totalItems = scItems.length;
+                const completedItems = scItems.filter(r=>['READY','STORES','STOCK'].includes(r.currentStage)).length;
+                const delayedItems = scItems.filter(r=>{
+                  const pending = daysBetween(r.timestamp, new Date().toISOString().substring(0,10));
+                  return pending !== null && pending > 2;
+                }).length;
+                const onTimeItems = scItems.filter(r=>{
+                  const cycle = calculateProcessCycleTime(r.poDate, r.timestamp);
+                  return cycle !== null && cycle <= 21;
+                }).length;
+                const avgCycleTime = scItems.reduce((sum, r)=>{
+                  const cycle = calculateProcessCycleTime(r.poDate, r.timestamp);
+                  return sum + (cycle !== null ? cycle : 0);
+                }, 0) / Math.max(totalItems, 1);
+
+                return (
+                  <>
+                    <div>
+                      <div style={{fontSize:10,color:'var(--text-muted)',marginBottom:6}}>Total Items in SC</div>
+                      <div style={{fontFamily:'Rajdhani',fontSize:24,fontWeight:700,color:'var(--accent1)'}}>{totalItems}</div>
+                    </div>
+                    <div>
+                      <div style={{fontSize:10,color:'var(--text-muted)',marginBottom:6}}>Completed</div>
+                      <div style={{fontFamily:'Rajdhani',fontSize:24,fontWeight:700,color:'var(--success)'}}>{completedItems} <span style={{fontSize:11,color:'var(--text-muted)'}}>{totalItems>0?`(${Math.round(completedItems/totalItems*100)}%)`:''}</span></div>
+                    </div>
+                    <div>
+                      <div style={{fontSize:10,color:'var(--text-muted)',marginBottom:6}}>Delayed Items (2d+)</div>
+                      <div style={{fontFamily:'Rajdhani',fontSize:24,fontWeight:700,color:delayedItems>0?'var(--danger)':'var(--success)'}}>{delayedItems}</div>
+                    </div>
+                    <div>
+                      <div style={{fontSize:10,color:'var(--text-muted)',marginBottom:6}}>On-Time Items ({'>'}21d Avg Cycle Time</div>
+                      <div style={{fontFamily:'Rajdhani',fontSize:24,fontWeight:700,color:avgCycleTime<=21?'var(--success)':'var(--warning)'}}>{Math.round(avgCycleTime)}d</div>
+                    </div>
+                  </>
+                );
+              })()}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
-
-// ─── UPLOAD PAGE ───────────────────────────────────────────────────────────────
 function UploadPage({onUpload, data, uploadStatus, setUploadStatus, liveConfig, setLiveConfig, onSyncNow, liveState}) {
   const [drag, setDrag] = useState(false);
   const fileRef = useRef();
