@@ -1595,9 +1595,39 @@ function App() {
 
 // ─── OVERVIEW PAGE ─────────────────────────────────────────────────────────────
 function OverviewPage({kpis, data, filtered}) {
+  const [selectedCategory, setSelectedCategory] = useState(null);
   const stageChartRef = useRef();
   const donutRef = useRef();
   const typeChartRef = useRef();
+
+  const today = new Date().toISOString().substring(0,10);
+  
+  // FEATURE 1: Overview Categories - Daily Set, Delayed PO, InProgress
+  const dailySetItems = data.filter(d => d.poDate === today);
+  const delayedPOItems = data.filter(d => {
+    const aging = calculateVendorAging(d.timestamp, today);
+    return aging !== null && aging > 2;
+  });
+  const inProgressItems = data.filter(d => !['READY','STORES','STOCK'].includes(d.currentStage));
+
+  // Group items by PO for modal display
+  function groupByPO(items) {
+    const grouped = {};
+    items.forEach(item => {
+      if(!grouped[item.po]) grouped[item.po] = [];
+      grouped[item.po].push(item);
+    });
+    return Object.entries(grouped).map(([po, poItems]) => ({
+      po,
+      scs: [...new Set(poItems.map(i => i.sc))],
+      items: poItems,
+      count: poItems.length
+    }));
+  }
+
+  const dailyPOs = groupByPO(dailySetItems);
+  const delayedPOs = groupByPO(delayedPOItems);
+  const inProgressPOs = groupByPO(inProgressItems);
 
   const stages = Object.entries(kpis.stageCounts).sort((a,b)=>b[1]-a[1]).slice(0,12);
 
@@ -1651,6 +1681,96 @@ function OverviewPage({kpis, data, filtered}) {
         <KPICard label="DELAYED POs" value={kpis.delayed} sub="exceeded 21-day target" color1="#ff3d5a" color2="#ff6b35"/>
         <KPICard label="INHOUSE WORKLOAD" value={`${Math.round(kpis.inhouse/Math.max(filtered.length,1)*100)}%`} sub={`${kpis.inhouse} inhouse · ${kpis.vendor} vendor`} color1="#00c9ff" color2="#b24bff"/>
       </div>
+
+      {/* FEATURE 1: Overview Category Cards */}
+      <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:14,marginBottom:20}}>
+        {[
+          {id:'daily',label:'DAILY SET',value:dailySetItems.length,sub:'items created today',color1:'#00c9ff',color2:'#0fa8e0',data:dailyPOs},
+          {id:'delayed',label:'DELAYED PO',value:delayedPOItems.length,sub:'items >2d pending',color1:'#ff3d5a',color2:'#ff6b35',data:delayedPOs},
+          {id:'inprogress',label:'INPROGRESS',value:inProgressItems.length,sub:'items in production',color1:'#ffd60a',color2:'#b24bff',data:inProgressPOs},
+        ].map(cat => (
+          <button
+            key={cat.id}
+            onClick={() => setSelectedCategory(cat.id)}
+            style={{
+              background:`linear-gradient(135deg,${cat.color1}15,${cat.color2}08)`,
+              border:`1px solid ${cat.color1}40`,
+              borderRadius:10,
+              padding:16,
+              cursor:'pointer',
+              textAlign:'left',
+              transition:'all 0.3s ease',
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.transform = 'translateY(-2px)';
+              e.currentTarget.style.borderColor = cat.color1 + '80';
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.transform = 'translateY(0)';
+              e.currentTarget.style.borderColor = cat.color1 + '40';
+            }}
+          >
+            <div style={{fontSize:12,color:'var(--text-muted)',letterSpacing:1,marginBottom:8}}>{cat.label}</div>
+            <div style={{fontFamily:'Rajdhani',fontSize:32,fontWeight:700,color:cat.color1,marginBottom:6}}>{cat.value}</div>
+            <div style={{fontSize:11,color:'var(--text-secondary)'}}>{cat.sub}</div>
+            <div style={{fontSize:10,color:cat.color1,marginTop:8}}>CLICK TO VIEW ▸</div>
+          </button>
+        ))}
+      </div>
+
+      {/* FEATURE 1: Category Modal */}
+      {selectedCategory && (
+        <div className="table-card" style={{marginBottom:20,border:'2px solid var(--accent1)',boxShadow:'0 0 30px rgba(0,201,255,0.2)'}}>
+          <div className="table-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center',backgroundColor:'rgba(0,201,255,0.05)'}}>
+            <div>
+              <div className="chart-title" style={{color:'var(--accent1)'}}>
+                {selectedCategory==='daily'?'📅 DAILY SET':selectedCategory==='delayed'?'⚠️ DELAYED POs':'⏳ INPROGRESS'}
+              </div>
+              <div className="chart-sub">
+                {selectedCategory==='daily'?'Items created today':selectedCategory==='delayed'?'Items with >2 days pending':'All items in production'}
+              </div>
+            </div>
+            <button
+              onClick={() => setSelectedCategory(null)}
+              style={{background:'none',border:'1px solid var(--border)',color:'var(--text-muted)',borderRadius:6,padding:'6px 12px',cursor:'pointer',fontSize:11,fontWeight:600}}
+            >
+              CLOSE
+            </button>
+          </div>
+          <div style={{padding:'16px 18px',maxHeight:'500px',overflowY:'auto'}}>
+            {(selectedCategory==='daily'?dailyPOs:selectedCategory==='delayed'?delayedPOs:inProgressPOs).map((poGroup,poIdx) => (
+              <div key={poIdx} style={{marginBottom:16,border:'1px solid var(--border)',borderRadius:8,overflow:'hidden'}}>
+                <div style={{background:'rgba(26,58,92,0.5)',padding:'12px 14px',cursor:'pointer',display:'flex',justifyContent:'space-between',alignItems:'center'}}
+                  onClick={() => {
+                    const elem = document.getElementById(`po-detail-${poIdx}`);
+                    elem.style.display = elem.style.display==='none'?'block':'none';
+                  }}
+                >
+                  <div>
+                    <div style={{fontFamily:'Share Tech Mono',fontSize:11,fontWeight:700,color:'var(--accent1)'}}>{poGroup.po}</div>
+                    <div style={{fontSize:10,color:'var(--text-muted)',marginTop:4}}>{poGroup.count} items · {poGroup.scs.length} SCs</div>
+                  </div>
+                  <div style={{fontSize:12}}>▼</div>
+                </div>
+                <div id={`po-detail-${poIdx}`} style={{display:'none',padding:'12px 14px',borderTop:'1px solid var(--border)',background:'rgba(0,0,0,0.2)'}}>
+                  <div style={{fontSize:10,color:'var(--text-muted)',marginBottom:8}}>SCs in this PO: {poGroup.scs.join(', ')}</div>
+                  <div style={{fontSize:10,color:'var(--text-muted)'}}>
+                    Items: {poGroup.items.map((i,idx) => (
+                      <div key={idx} style={{padding:'6px 0',borderBottom:idx<poGroup.items.length-1?'1px solid rgba(26,58,92,0.4)':'none'}}>
+                        <span style={{color:'var(--accent1)',fontFamily:'Share Tech Mono',fontSize:9}}>{i.sc}</span>
+                        {' · '}
+                        <span style={{fontSize:9}}>{i.product?.substring(0,40)}</span>
+                        {' · '}
+                        <span style={{color:'var(--text-muted)',fontSize:9}}>{i.currentStage}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="chart-grid">
         <div className="chart-card">
@@ -1854,6 +1974,7 @@ function ProductionPage({kpis, filtered, scGroups}) {
 
 // ─── WIP PAGE ──────────────────────────────────────────────────────────────────
 function WIPPage({kpis, filtered}) {
+  const [expandedItem, setExpandedItem] = useState(null);
   const wipRef = useRef();
   const stages = Object.entries(kpis.stageCounts).sort((a,b)=>b[1]-a[1]);
 
@@ -1921,21 +2042,52 @@ function WIPPage({kpis, filtered}) {
         </div>
       </div>
       <div className="table-card">
-        <div className="table-header"><div className="chart-title">All Items by Stage</div></div>
+        <div className="table-header"><div className="chart-title">All Items by Stage — Separate Individual Items</div></div>
         <div className="table-wrap">
           <table>
-            <thead><tr><th>SC</th><th>PO</th><th>PRODUCT</th><th>TYPE</th><th>STAGE</th><th>STATUS 1</th><th>INHOUSE</th><th>TIMESTAMP</th></tr></thead>
+            <thead><tr><th>SC</th><th>PO</th><th>PRODUCT</th><th>TYPE</th><th>STAGE</th><th>STATUS 1</th><th>INHOUSE</th><th>TIMESTAMP</th><th>DETAILS</th></tr></thead>
             <tbody>{filtered.slice(0,200).map((r,i)=>(
-              <tr key={i}>
-                <td className="mono text-accent">{r.sc}</td>
-                <td style={{fontSize:11}}>{r.po}</td>
-                <td style={{maxWidth:220,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{r.product}</td>
-                <td><span className="status-pill badge-blue">{r.type}</span></td>
-                <td><span className="status-pill" style={{background:getStageColor(r.currentStage)+'22',color:getStageColor(r.currentStage)}}>{r.currentStage}</span></td>
-                <td style={{fontSize:10,maxWidth:180,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{r.status1}</td>
-                <td><span className={`status-pill ${r.inhouse==='VENDOR'?'s-vendor':'badge-blue'}`}>{r.inhouse}</span></td>
-                <td className="mono" style={{fontSize:10}}>{r.timestamp?.substring(0,10)}</td>
-              </tr>
+              <React.Fragment key={i}>
+                <tr style={{cursor:'pointer',backgroundColor:expandedItem===i?'rgba(0,201,255,0.08)':'transparent'}}>
+                  <td className="mono text-accent">{r.sc}</td>
+                  <td style={{fontSize:11}}>{r.po}</td>
+                  <td style={{maxWidth:220,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{r.product}</td>
+                  <td><span className="status-pill badge-blue">{r.type}</span></td>
+                  <td><span className="status-pill" style={{background:getStageColor(r.currentStage)+'22',color:getStageColor(r.currentStage)}}>{r.currentStage}</span></td>
+                  <td style={{fontSize:10,maxWidth:180,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{r.status1}</td>
+                  <td><span className={`status-pill ${r.inhouse==='VENDOR'?'s-vendor':'badge-blue'}`}>{r.inhouse}</span></td>
+                  <td className="mono" style={{fontSize:10}}>{r.timestamp?.substring(0,10)}</td>
+                  <td>
+                    <button onClick={() => setExpandedItem(expandedItem===i?null:i)} style={{background:'none',border:'none',color:'var(--accent1)',cursor:'pointer',fontSize:11}}>
+                      {expandedItem===i?'▼':'▶'}
+                    </button>
+                  </td>
+                </tr>
+                {expandedItem===i && (
+                  <tr style={{backgroundColor:'rgba(0,201,255,0.04)',borderBottom:'2px solid var(--border)'}}>
+                    <td colSpan="9" style={{padding:'14px'}}>
+                      <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:14}}>
+                        <div>
+                          <div style={{fontSize:9,color:'var(--text-muted)',marginBottom:4}}>PO Number</div>
+                          <div style={{fontFamily:'Share Tech Mono',fontSize:13,fontWeight:700,color:'var(--accent1)'}}>{r.po}</div>
+                        </div>
+                        <div>
+                          <div style={{fontSize:9,color:'var(--text-muted)',marginBottom:4}}>SC Number</div>
+                          <div style={{fontFamily:'Share Tech Mono',fontSize:13,fontWeight:700,color:'var(--accent1)'}}>{r.sc}</div>
+                        </div>
+                        <div>
+                          <div style={{fontSize:9,color:'var(--text-muted)',marginBottom:4}}>Current Stage</div>
+                          <div style={{fontSize:12,fontWeight:600,color:getStageColor(r.currentStage)}}>{r.currentStage}</div>
+                        </div>
+                        <div>
+                          <div style={{fontSize:9,color:'var(--text-muted)',marginBottom:4}}>Days Pending</div>
+                          <div style={{fontSize:13,fontWeight:700,color:r.timestamp?((new Date()-new Date(r.timestamp))/(1000*60*60*24)>2?'var(--danger)':'var(--success)'):''}}>{r.timestamp?Math.round((new Date()-new Date(r.timestamp))/(1000*60*60*24)):'-'}d</div>
+                        </div>
+                      </div>
+                    </td>
+                  </tr>
+                )}
+              </React.Fragment>
             ))}</tbody>
           </table>
         </div>
@@ -1949,7 +2101,17 @@ function CycleTimePage({kpis, filtered}) {
   const ctBarRef  = useRef();
   const ctLineRef = useRef();
 
-  const cts = kpis.stageCycleTimes.filter(s=>!['STOCK','RM'].includes(s.stage));
+  // FEATURE 3: Remove STORE, reorder with HOV first, convert to integers
+  const cts = kpis.stageCycleTimes
+    .filter(s => !['STOCK','RM','STORE','STORES'].includes(s.stage))
+    .sort((a, b) => {
+      const stageOrder = ['HOV','BLV','HCV','FBV','HTV','SDV','LATHE','M1','FB','HT','SZ','BLK','CG','SG','SD','HO','CA','WC','VA','QC','DCPLI','READY'];
+      const aIdx = stageOrder.indexOf(a.stage);
+      const bIdx = stageOrder.indexOf(b.stage);
+      return (aIdx >= 0 ? aIdx : 1000) - (bIdx >= 0 ? bIdx : 1000);
+    })
+    .map(s => ({...s, duration: Math.round(s.duration), avgToReach: Math.round(s.avgToReach)}));
+  
   const maxDur = Math.max(...cts.map(c=>c.duration), 1);
 
   useChart(ctBarRef, {
@@ -2069,8 +2231,8 @@ function CycleTimePage({kpis, filtered}) {
                 return (
                   <tr key={i}>
                     <td><span className="status-pill" style={{background:getStageColor(c.stage)+'22',color:getStageColor(c.stage)}}>{c.stage}</span></td>
-                    <td style={{fontFamily:'Rajdhani',fontWeight:700,fontSize:17,color:'var(--accent1)'}}>{c.avgToReach}d</td>
-                    <td style={{fontFamily:'Rajdhani',fontWeight:700,fontSize:17,color}}>{c.duration}d</td>
+                    <td style={{fontFamily:'Rajdhani',fontWeight:700,fontSize:17,color:'var(--accent1)'}}>{Math.round(c.avgToReach)}d</td>
+                    <td style={{fontFamily:'Rajdhani',fontWeight:700,fontSize:17,color}}>{Math.round(c.duration)}d</td>
                     <td style={{color:'var(--text-muted)'}}>{c.count}</td>
                     <td style={{color:vsColor,fontWeight:700,fontSize:12}}>{vsTarget}</td>
                     <td style={{fontSize:11}}>{rating}</td>
@@ -2249,6 +2411,7 @@ function BottleneckPage({kpis, filtered}) {
 
 // ─── PO PAGE ───────────────────────────────────────────────────────────────────
 function POPage({kpis, poGroups}) {
+  const [expandedPO, setExpandedPO] = useState(null);
   const leadsRef = useRef();
 
   const leadData = kpis.bottleneck.slice(0,15);
@@ -2284,25 +2447,65 @@ function POPage({kpis, poGroups}) {
         <div className="chart-wrap-lg"><canvas ref={leadsRef}/></div>
       </div>
       <div className="table-card">
-        <div className="table-header"><div className="chart-title">PO Lead Time Details</div></div>
+        <div className="table-header"><div className="chart-title">PO Lead Time Details — Click to View Items</div></div>
         <div className="table-wrap">
           <table>
-            <thead><tr><th>PO</th><th>PO DATE</th><th>ITEMS</th><th>LAST TIMESTAMP</th><th>DAYS TAKEN</th><th>VS TARGET</th><th>STATUS</th></tr></thead>
+            <thead><tr><th>PO</th><th>PO DATE</th><th>ITEMS</th><th>LAST TIMESTAMP</th><th>DAYS TAKEN</th><th>VS TARGET</th><th>STATUS</th><th></th></tr></thead>
             <tbody>
               {kpis.bottleneck.map((b,i)=>{
                 const over = (b.days||0)-21;
+                const isDelayed = (b.days||0)>21;
                 return (
-                  <tr key={i}>
-                    <td className="mono text-accent">{b.po}</td>
-                    <td className="mono" style={{fontSize:11}}>{b.poDate?.substring(0,10)}</td>
-                    <td>{b.items.length}</td>
-                    <td className="mono" style={{fontSize:10}}>{getSCLastTimestamp(b.items)?.substring(0,10)||'—'}</td>
-                    <td><span style={{fontFamily:'Rajdhani',fontWeight:700,fontSize:18,color:(b.days||0)>21?'var(--danger)':'var(--success)'}}>{b.days??'—'}</span></td>
-                    <td style={{color:over>0?'var(--danger)':'var(--success)',fontWeight:700}}>
-                      {b.days!=null?(over>0?`+${over} over`:`-${Math.abs(over)} early`):'—'}
-                    </td>
-                    <td><span className={`status-pill ${b.done?'s-ready':'s-wip'}`}>{b.done?'DONE':'IN PROGRESS'}</span></td>
-                  </tr>
+                  <React.Fragment key={i}>
+                    <tr style={{cursor:'pointer',backgroundColor:expandedPO===i?'rgba(255,61,90,0.08)':'transparent',borderBottom:expandedPO===i?'2px solid var(--danger)':'1px solid var(--border)'}} onClick={() => setExpandedPO(expandedPO===i?null:i)}>
+                      <td className="mono text-accent">{b.po}</td>
+                      <td className="mono" style={{fontSize:11}}>{b.poDate?.substring(0,10)}</td>
+                      <td>{b.items.length}</td>
+                      <td className="mono" style={{fontSize:10}}>{getSCLastTimestamp(b.items)?.substring(0,10)||'—'}</td>
+                      <td><span style={{fontFamily:'Rajdhani',fontWeight:700,fontSize:18,color:isDelayed?'var(--danger)':'var(--success)'}}>{b.days??'—'}</span></td>
+                      <td style={{color:over>0?'var(--danger)':'var(--success)',fontWeight:700}}>
+                        {b.days!=null?(over>0?`+${over} over`:`-${Math.abs(over)} early`):'—'}
+                      </td>
+                      <td><span className={`status-pill ${b.done?'s-ready':'s-wip'}`}>{b.done?'DONE':'IN PROGRESS'}</span></td>
+                      <td style={{fontSize:11,color:'var(--text-muted)'}}>{expandedPO===i?'▼':'▶'}</td>
+                    </tr>
+                    {expandedPO===i && (
+                      <tr style={{backgroundColor:'rgba(255,61,90,0.05)',borderBottom:'2px solid var(--border)'}}>
+                        <td colSpan="8" style={{padding:'16px'}}>
+                          <div style={{marginBottom:12}}>
+                            <div style={{fontSize:11,color:'var(--text-muted)',marginBottom:8}}>📍 SCs in this PO:</div>
+                            <div style={{display:'flex',flexWrap:'wrap',gap:8,marginBottom:16}}>
+                              {[...new Set(b.items.map(i=>i.sc))].map((sc,sidx) => (
+                                <span key={sidx} style={{background:'var(--bg-secondary)',border:'1px solid var(--border)',borderRadius:4,padding:'6px 10px',fontSize:10,color:'var(--accent1)',fontFamily:'Share Tech Mono'}}>
+                                  {sc}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                          <div style={{fontSize:11,color:'var(--text-muted)',marginBottom:8}}>📦 Items in this PO:</div>
+                          <div style={{display:'grid',gridTemplateColumns:'repeat(2,1fr)',gap:12}}>
+                            {b.items.map((item,itemIdx) => {
+                              const itemDays = daysBetween(item.timestamp, new Date().toISOString().substring(0,10));
+                              const itemCycle = calculateProcessCycleTime(b.poDate, item.timestamp);
+                              const isItemDelayed = itemCycle && itemCycle > 21;
+                              return (
+                                <div key={itemIdx} style={{background:'rgba(0,0,0,0.3)',border:`1px solid ${isItemDelayed?'var(--danger)':'var(--border)'}`,borderRadius:6,padding:10}}>
+                                  <div style={{fontSize:10,color:'var(--accent1)',fontFamily:'Share Tech Mono',fontWeight:700}}>{item.sc}</div>
+                                  <div style={{fontSize:9,color:'var(--text-muted)',marginTop:4}}>{item.product?.substring(0,50)}</div>
+                                  <div style={{fontSize:9,marginTop:6,display:'flex',justifyContent:'space-between',gap:8}}>
+                                    <span>Stage: <span style={{color:'var(--accent4)'}}>{item.currentStage}</span></span>
+                                    <span style={{color:isItemDelayed?'var(--danger)':'var(--success)'}}>
+                                      {isItemDelayed?'🔴 DELAYED':'🟢 ON-TIME'}
+                                    </span>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
                 );
               })}
             </tbody>
@@ -2423,6 +2626,7 @@ function SCPage({kpis, scGroups}) {
 // ─── VENDOR PAGE ───────────────────────────────────────────────────────────────
 function VendorPage({kpis, data}) {
   const [selectedSC, setSelectedSC] = useState(null);
+  const [selectedItem, setSelectedItem] = useState(null);
   const vendorBarRef  = useRef();
   const vendorTimeRef = useRef();
   const vendors = kpis.vendors;
@@ -2674,10 +2878,10 @@ function VendorPage({kpis, data}) {
                   const overdue = pending != null && pending > TARGET_DAYS;
                   const slaStatus = r.slaViolation ? 'VIOLATION' : 'COMPLIANT';
                   return (
-                    <tr key={`${r.sc}-${r.po}-${i}`}>
+                    <tr key={`${r.sc}-${r.po}-${i}`} onClick={() => setSelectedItem(r)} style={{cursor:'pointer',backgroundColor:selectedItem===r?'rgba(255,107,53,0.08)':'transparent'}} title="Click to view item details">
                       <td>
                         <button
-                          onClick={()=>setSelectedSC(r.sc)}
+                          onClick={(e)=>{e.stopPropagation();setSelectedSC(r.sc)}}
                           className="mono text-accent fw7"
                           style={{background:'none',border:'none',padding:0,cursor:'pointer',textDecoration:'underline',fontSize:12}}
                           title={`View all products for SC ${r.sc}`}
@@ -2825,6 +3029,125 @@ function VendorPage({kpis, data}) {
                   </>
                 );
               })()}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* FEATURE 5: ITEM DETAIL MODAL - Click any vendor item to see full details */}
+      {selectedItem && (
+        <div className="table-card" style={{marginTop:20,border:'2px solid var(--accent4)',boxShadow:'0 0 30px rgba(255,107,53,0.2)'}}>
+          <div className="table-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center',backgroundColor:'rgba(255,107,53,0.05)'}}>
+            <div>
+              <div className="chart-title" style={{color:'var(--accent4)'}}>📋 Item Details</div>
+              <div className="chart-sub">Complete information for {selectedItem.sc}</div>
+            </div>
+            <button
+              onClick={() => setSelectedItem(null)}
+              style={{background:'none',border:'1px solid var(--border)',color:'var(--text-muted)',borderRadius:6,padding:'6px 12px',cursor:'pointer',fontSize:11,fontWeight:600}}
+            >
+              CLOSE
+            </button>
+          </div>
+          <div style={{padding:'20px 24px'}}>
+            <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:20,marginBottom:20}}>
+              <div style={{background:'rgba(0,0,0,0.2)',border:'1px solid var(--border)',borderRadius:8,padding:14}}>
+                <div style={{fontSize:9,color:'var(--text-muted)',marginBottom:8,letterSpacing:1,textTransform:'uppercase'}}>PO Number</div>
+                <div style={{fontFamily:'Share Tech Mono',fontSize:16,fontWeight:700,color:'var(--accent1)'}}>{selectedItem.po}</div>
+              </div>
+              <div style={{background:'rgba(0,0,0,0.2)',border:'1px solid var(--border)',borderRadius:8,padding:14}}>
+                <div style={{fontSize:9,color:'var(--text-muted)',marginBottom:8,letterSpacing:1,textTransform:'uppercase'}}>SC Number</div>
+                <div style={{fontFamily:'Share Tech Mono',fontSize:16,fontWeight:700,color:'var(--accent1)'}}>{selectedItem.sc}</div>
+              </div>
+              <div style={{background:'rgba(0,0,0,0.2)',border:'1px solid var(--border)',borderRadius:8,padding:14}}>
+                <div style={{fontSize:9,color:'var(--text-muted)',marginBottom:8,letterSpacing:1,textTransform:'uppercase'}}>Product Type</div>
+                <div style={{fontSize:14,fontWeight:600,color:'var(--accent2)'}}>{selectedItem.type}</div>
+              </div>
+            </div>
+
+            <div style={{background:'rgba(0,0,0,0.2)',border:'1px solid var(--border)',borderRadius:8,padding:14,marginBottom:20}}>
+              <div style={{fontSize:9,color:'var(--text-muted)',marginBottom:8,letterSpacing:1,textTransform:'uppercase'}}>Product Name</div>
+              <div style={{fontSize:14,fontWeight:600,color:'var(--text-primary)'}}>{selectedItem.product}</div>
+            </div>
+
+            <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:14,marginBottom:20}}>
+              {(() => {
+                const cycle = calculateProcessCycleTime(selectedItem.poDate, selectedItem.timestamp);
+                const today = new Date().toISOString().substring(0,10);
+                const pending = daysBetween(selectedItem.timestamp, today);
+                const isDelayed = pending !== null && pending > 2;
+                const isOnTime = cycle !== null && cycle <= 21;
+
+                return (
+                  <>
+                    <div style={{background:'rgba(0,201,255,0.1)',border:'1px solid rgba(0,201,255,0.3)',borderRadius:8,padding:12}}>
+                      <div style={{fontSize:9,color:'var(--text-muted)',marginBottom:6}}>Current Stage</div>
+                      <div style={{fontFamily:'Share Tech Mono',fontSize:14,fontWeight:700,color:'var(--accent1)'}}>{selectedItem.currentStage}</div>
+                    </div>
+                    <div style={{background:'rgba(255,107,53,0.1)',border:'1px solid rgba(255,107,53,0.3)',borderRadius:8,padding:12}}>
+                      <div style={{fontSize:9,color:'var(--text-muted)',marginBottom:6}}>Cycle Time</div>
+                      <div style={{fontFamily:'Rajdhani',fontSize:16,fontWeight:700,color:isOnTime?'var(--success)':'var(--warning)'}}>{cycle!==null?`${cycle} days`:'—'}</div>
+                    </div>
+                    <div style={{background:`rgba(${isDelayed?'255,61,90':'0,230,118'},0.1)`,border:`1px solid rgba(${isDelayed?'255,61,90':'0,230,118'},0.3)`,borderRadius:8,padding:12}}>
+                      <div style={{fontSize:9,color:'var(--text-muted)',marginBottom:6}}>Pending Days</div>
+                      <div style={{fontFamily:'Rajdhani',fontSize:16,fontWeight:700,color:isDelayed?'var(--danger)':'var(--success)'}}>{pending!==null?`${pending} days`:'—'}</div>
+                    </div>
+                    <div style={{background:'rgba(0,0,0,0.2)',border:'1px solid var(--border)',borderRadius:8,padding:12}}>
+                      <div style={{fontSize:9,color:'var(--text-muted)',marginBottom:6}}>Last Update</div>
+                      <div style={{fontFamily:'Share Tech Mono',fontSize:10,color:'var(--text-secondary)'}}>{selectedItem.timestamp?.substring(0,16)||'—'}</div>
+                    </div>
+                  </>
+                );
+              })()}
+            </div>
+
+            <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:14,marginBottom:20}}>
+              {(() => {
+                const cycle = calculateProcessCycleTime(selectedItem.poDate, selectedItem.timestamp);
+                const today = new Date().toISOString().substring(0,10);
+                const pending = daysBetween(selectedItem.timestamp, today);
+                const isDelayed = pending !== null && pending > 2;
+                const isOnTime = cycle !== null && cycle <= 21;
+                const isCompleted = ['READY','STORES','STOCK'].includes(selectedItem.currentStage);
+
+                return (
+                  <>
+                    <div>
+                      <span className={`status-pill ${isCompleted?'badge-green':'badge-yellow'}`} style={{fontSize:11}}>
+                        {isCompleted?'✓ COMPLETED':'⏳ PROCESSING'}
+                      </span>
+                    </div>
+                    <div>
+                      <span className={`status-pill ${isDelayed?'badge-red':'badge-green'}`} style={{fontSize:11}}>
+                        {isDelayed?'⚠ SLA VIOLATION':'✓ COMPLIANT'}
+                      </span>
+                    </div>
+                    <div>
+                      <span className={`status-pill ${isOnTime&&isCompleted?'badge-green':isDelayed?'badge-red':'badge-yellow'}`} style={{fontSize:11}}>
+                        {isOnTime&&isCompleted?'🟢 ON-TIME':isDelayed?'🔴 DELAYED':isCompleted?'🟢 EARLY':'🟡 IN-PROGRESS'}
+                      </span>
+                    </div>
+                  </>
+                );
+              })()}
+            </div>
+
+            <div style={{background:'rgba(0,201,255,0.05)',border:'1px dashed rgba(0,201,255,0.3)',borderRadius:8,padding:14}}>
+              <div style={{fontSize:10,color:'var(--text-muted)',marginBottom:8}}>📌 Quick Actions</div>
+              <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                <button 
+                  onClick={() => { setSelectedItem(null); setSelectedSC(selectedItem.sc); }}
+                  style={{background:'var(--bg-secondary)',border:'1px solid var(--border)',color:'var(--text-primary)',borderRadius:6,padding:'8px 12px',cursor:'pointer',fontSize:10,fontWeight:600}}
+                >
+                  View SC {selectedItem.sc} Details
+                </button>
+                <button 
+                  onClick={() => setSelectedItem(null)}
+                  style={{background:'none',border:'1px solid var(--border)',color:'var(--text-muted)',borderRadius:6,padding:'8px 12px',cursor:'pointer',fontSize:10}}
+                >
+                  Close
+                </button>
+              </div>
             </div>
           </div>
         </div>
