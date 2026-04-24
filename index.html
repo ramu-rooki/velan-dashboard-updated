@@ -1596,6 +1596,7 @@ function App() {
 // ─── OVERVIEW PAGE ─────────────────────────────────────────────────────────────
 function OverviewPage({kpis, data, filtered}) {
   const [selectedCategory, setSelectedCategory] = useState(null);
+  const [showReadyDetails, setShowReadyDetails] = useState(false);
   const stageChartRef = useRef();
   const donutRef = useRef();
   const typeChartRef = useRef();
@@ -1606,9 +1607,10 @@ function OverviewPage({kpis, data, filtered}) {
   const dailySetItems = data.filter(d => d.poDate === today);
   const delayedPOItems = data.filter(d => {
     const aging = calculateVendorAging(d.timestamp, today);
-    return aging !== null && aging > 2;
+    return aging !== null && aging > TARGET_DAYS;
   });
   const inProgressItems = data.filter(d => !['READY','STORES','STOCK'].includes(d.currentStage));
+  const readyItems = data.filter(d => d.currentStage === 'READY');
 
   // Group items by PO for modal display
   function groupByPO(items) {
@@ -1628,6 +1630,7 @@ function OverviewPage({kpis, data, filtered}) {
   const dailyPOs = groupByPO(dailySetItems);
   const delayedPOs = groupByPO(delayedPOItems);
   const inProgressPOs = groupByPO(inProgressItems);
+  const readyPOs = groupByPO(readyItems);
 
   const stages = Object.entries(kpis.stageCounts).sort((a,b)=>b[1]-a[1]).slice(0,12);
 
@@ -1675,7 +1678,15 @@ function OverviewPage({kpis, data, filtered}) {
 
       <div className="kpi-grid">
         <KPICard label="TOTAL ITEMS" value={filtered.length} sub="in current view" color1="#00c9ff" color2="#0fa8e0"/>
-        <KPICard label="READY / DAILY OUT" value={kpis.ready} sub="sets ready to dispatch" color1="#00e676" color2="#00c9ff" badge={{text:`+${kpis.stores} to stores`,cls:'badge-blue'}}/>
+        <KPICard
+          label="READY / DAILY OUT"
+          value={kpis.ready}
+          sub="sets ready to dispatch"
+          color1="#00e676"
+          color2="#00c9ff"
+          badge={{text:`+${kpis.stores} to stores`,cls:'badge-blue'}}
+          action={{text:'View ready details', onClick:()=>setShowReadyDetails(true)}}
+        />
         <KPICard label="IN PROGRESS (WIP)" value={kpis.wip} sub="items active in production" color1="#ffd60a" color2="#ff6b35"/>
         <KPICard label="ON-TIME COMPLETION" value={`${kpis.onTimePct}%`} sub={`${kpis.onTime} of ${kpis.totalPOs} POs within 3 weeks`} color1="#00ff9d" color2="#00c9ff" badge={{text:`${kpis.delayed} delayed`,cls:'badge-red'}}/>
         <KPICard label="DELAYED POs" value={kpis.delayed} sub="exceeded 21-day target" color1="#ff3d5a" color2="#ff6b35"/>
@@ -1686,7 +1697,7 @@ function OverviewPage({kpis, data, filtered}) {
       <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:14,marginBottom:20}}>
         {[
           {id:'daily',label:'DAILY SET',value:dailySetItems.length,sub:'items created today',color1:'#00c9ff',color2:'#0fa8e0',data:dailyPOs},
-          {id:'delayed',label:'DELAYED PO',value:delayedPOItems.length,sub:'items >2d pending',color1:'#ff3d5a',color2:'#ff6b35',data:delayedPOs},
+          {id:'delayed',label:'DELAYED PO',value:delayedPOItems.length,sub:'items >21 days pending',color1:'#ff3d5a',color2:'#ff6b35',data:delayedPOs},
           {id:'inprogress',label:'INPROGRESS',value:inProgressItems.length,sub:'items in production',color1:'#ffd60a',color2:'#b24bff',data:inProgressPOs},
         ].map(cat => (
           <button
@@ -1727,7 +1738,7 @@ function OverviewPage({kpis, data, filtered}) {
                 {selectedCategory==='daily'?'📅 DAILY SET':selectedCategory==='delayed'?'⚠️ DELAYED POs':'⏳ INPROGRESS'}
               </div>
               <div className="chart-sub">
-                {selectedCategory==='daily'?'Items created today':selectedCategory==='delayed'?'Items with >2 days pending':'All items in production'}
+                {selectedCategory==='daily'?'Items created today':selectedCategory==='delayed'?'Items with >21 days pending':'All items in production'}
               </div>
             </div>
             <button
@@ -1765,6 +1776,54 @@ function OverviewPage({kpis, data, filtered}) {
                       </div>
                     ))}
                   </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {showReadyDetails && (
+        <div className="table-card" style={{marginBottom:20,border:'2px solid var(--success)',boxShadow:'0 0 30px rgba(0,230,118,0.2)'}}>
+          <div className="table-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center',backgroundColor:'rgba(0,230,118,0.06)'}}>
+            <div>
+              <div className="chart-title" style={{color:'var(--success)'}}>
+                ✅ READY / DAILY OUT DETAILS
+              </div>
+              <div className="chart-sub">
+                PO and SC numbers ready to dispatch with item details
+              </div>
+            </div>
+            <button
+              onClick={() => setShowReadyDetails(false)}
+              style={{background:'none',border:'1px solid var(--border)',color:'var(--text-muted)',borderRadius:6,padding:'6px 12px',cursor:'pointer',fontSize:11,fontWeight:600}}
+            >
+              CLOSE
+            </button>
+          </div>
+          <div style={{padding:'16px 18px',maxHeight:'500px',overflowY:'auto'}}>
+            {readyPOs.length === 0 ? (
+              <div style={{color:'var(--text-secondary)',fontSize:12}}>No ready items found for dispatch.</div>
+            ) : readyPOs.map((poGroup,poIdx) => (
+              <div key={poIdx} style={{marginBottom:16,border:'1px solid var(--border)',borderRadius:8,overflow:'hidden'}}>
+                <div style={{background:'rgba(0,230,118,0.08)',padding:'12px 14px',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                  <div>
+                    <div style={{fontFamily:'Share Tech Mono',fontSize:11,fontWeight:700,color:'var(--success)'}}>{poGroup.po}</div>
+                    <div style={{fontSize:10,color:'var(--text-muted)',marginTop:4}}>SCs: {poGroup.scs.join(', ')}</div>
+                    <div style={{fontSize:10,color:'var(--text-muted)'}}>{poGroup.count} ready items</div>
+                  </div>
+                </div>
+                <div style={{padding:'12px 14px',borderTop:'1px solid var(--border)',background:'rgba(0,0,0,0.12)'}}>
+                  {poGroup.items.map((item, idx) => (
+                    <div key={idx} style={{padding:'8px 0',borderBottom:idx < poGroup.items.length - 1 ? '1px solid rgba(26,58,92,0.4)' : 'none'}}>
+                      <div style={{display:'flex',gap:12,flexWrap:'wrap',alignItems:'center'}}>
+                        <span style={{fontFamily:'Share Tech Mono',fontSize:10,color:'var(--accent1)'}}>{item.sc}</span>
+                        <span style={{fontSize:10,color:'var(--text-primary)'}}>{item.product}</span>
+                        <span style={{fontSize:10,color:'var(--text-muted)'}}>Stage: <strong>{item.currentStage}</strong></span>
+                        <span style={{fontSize:10,color:'var(--text-muted)'}}>Last update: {item.timestamp?.substring(0,16) || '—'}</span>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </div>
             ))}
@@ -3377,13 +3436,31 @@ function UploadPage({onUpload, data, uploadStatus, setUploadStatus, liveConfig, 
 }
 
 // ─── KPI CARD ──────────────────────────────────────────────────────────────────
-function KPICard({label,value,sub,color1,color2,badge}) {
+function KPICard({label,value,sub,color1,color2,badge,action}) {
   return (
     <div className="kpi-card" style={{'--c1':color1,'--c2':color2}}>
       <div className="kpi-label">{label}</div>
       <div className="kpi-value">{value}</div>
       {sub&&<div className="kpi-sub">{sub}</div>}
       {badge&&<div className={`kpi-badge ${badge.cls}`}>{badge.text}</div>}
+      {action && (
+        <button
+          onClick={action.onClick}
+          style={{
+            marginTop:12,
+            padding:'8px 12px',
+            border:'1px solid rgba(255,255,255,0.12)',
+            background:'rgba(255,255,255,0.05)',
+            color:'var(--text-primary)',
+            borderRadius:8,
+            fontSize:11,
+            fontWeight:700,
+            cursor:'pointer'
+          }}
+        >
+          {action.text}
+        </button>
+      )}
     </div>
   );
 }
