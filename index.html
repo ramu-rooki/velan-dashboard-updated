@@ -1605,12 +1605,29 @@ function OverviewPage({kpis, data, filtered}) {
   
   // FEATURE 1: Overview Categories - Daily Set, Delayed PO, InProgress
   const dailySetItems = data.filter(d => d.poDate === today);
-  const delayedPOItems = data.filter(d => {
-    const aging = calculateVendorAging(d.timestamp, today);
-    return aging !== null && aging > TARGET_DAYS;
-  });
   const inProgressItems = data.filter(d => !['READY','STORES','STOCK'].includes(d.currentStage));
   const readyItems = data.filter(d => d.currentStage === 'READY');
+
+  // Determine delayed PO groups by PO-level age and completion status
+  const delayedPOKeys = new Set();
+  const poGroupsMap = {};
+  data.forEach(item => {
+    if(!item.po) return;
+    if(!poGroupsMap[item.po]) poGroupsMap[item.po] = [];
+    poGroupsMap[item.po].push(item);
+  });
+  Object.values(poGroupsMap).forEach(poItems => {
+    const lastTs = getSCLastTimestamp(poItems);
+    const days = daysBetween(poItems[0].poDate, lastTs);
+    const allDone = poItems.every(i => ['READY','STORES','STOCK'].includes(i.currentStage));
+    if(allDone) {
+      if(days !== null && days > TARGET_DAYS) delayedPOKeys.add(poItems[0].po);
+    } else {
+      const elapsed = daysBetween(poItems[0].poDate, today);
+      if(elapsed !== null && elapsed > TARGET_DAYS) delayedPOKeys.add(poItems[0].po);
+    }
+  });
+  const delayedPOItems = data.filter(d => delayedPOKeys.has(d.po));
 
   // Group items by PO for modal display
   function groupByPO(items) {
@@ -1697,7 +1714,7 @@ function OverviewPage({kpis, data, filtered}) {
       <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:14,marginBottom:20}}>
         {[
           {id:'daily',label:'DAILY SET',value:dailySetItems.length,sub:'items created today',color1:'#00c9ff',color2:'#0fa8e0',data:dailyPOs},
-          {id:'delayed',label:'DELAYED PO',value:delayedPOItems.length,sub:'items >21 days pending',color1:'#ff3d5a',color2:'#ff6b35',data:delayedPOs},
+          {id:'delayed',label:'DELAYED PO',value:delayedPOItems.length,sub:'items in delayed POs',color1:'#ff3d5a',color2:'#ff6b35',data:delayedPOs},
           {id:'inprogress',label:'INPROGRESS',value:inProgressItems.length,sub:'items in production',color1:'#ffd60a',color2:'#b24bff',data:inProgressPOs},
         ].map(cat => (
           <button
