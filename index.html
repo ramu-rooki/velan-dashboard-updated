@@ -1367,7 +1367,7 @@ function App() {
     // ── FEATURE 9: Vendor Evaluation (Today vs last update timestamp) ───────
     // Measure process aging as days since last edit/update.
     const vendorStageData = []; // {vendor, stage, daysFromPO, pendingDays}
-    data.forEach(r => {
+    filtered.forEach(r => {
       if(r.inhouse !== 'VENDOR' || !r.timestamp) return;
       const daysFromPO = r.poDate ? dateDiff(r.poDate, r.timestamp) : null;
       const pendingDays = dateDiff(r.timestamp, today);
@@ -1441,7 +1441,7 @@ function App() {
 
     // Old vendor time map (kept for backward compatibility with existing displays)
     const vendorTimeMap = {};
-    data.forEach(r => {
+    filtered.forEach(r => {
       if(r.inhouse !== 'VENDOR') return;
       const vcode = r.currentStage || 'UNKNOWN';
       if(!vendorTimeMap[vcode]) vendorTimeMap[vcode] = {code:vcode, count:0, items:[], days:[]};
@@ -1585,7 +1585,7 @@ function App() {
           {activeNav==='bottleneck' && <BottleneckPage kpis={kpis} filtered={filtered}/>}
           {activeNav==='po' && <POPage kpis={kpis} poGroups={poGroups}/>}
           {activeNav==='sc' && <SCPage kpis={kpis} scGroups={scGroups}/>}
-          {activeNav==='vendor' && <VendorPage kpis={kpis} data={data}/>}
+          {activeNav==='vendor' && <VendorPage kpis={kpis} data={filtered}/>}
           {activeNav==='upload' && <UploadPage onUpload={handleFileUpload} data={data} uploadStatus={uploadStatus} setUploadStatus={setUploadStatus} liveConfig={liveConfig} setLiveConfig={setLiveConfig} onSyncNow={syncLiveDataNow} liveState={liveState}/>}
         </div>
       </div>
@@ -2046,37 +2046,23 @@ function WIPPage({kpis, filtered}) {
     options:{responsive:true,maintainAspectRatio:false,indexAxis:'y',plugins:{legend:{display:false}},scales:{x:{ticks:{color:'#7ba7cc'},grid:{color:'rgba(26,58,92,0.3)'}},y:{ticks:{color:'#7ba7cc',font:{size:10}},grid:{display:false}}}}
   }, [kpis]);
 
-  const STAGE_GROUPS = {
-    'LATHE / M1': ['LATHE','M1'],
-    'FB': ['FB','FBV'],
-    'HT / SZ': ['HT','HTI','SZ'],
-    'CG / SG': ['CG','CGI','SG'],
-    'BLK / CA': ['BLK','CA'],
-    'VA': ['VA'],
-    'QC': ['QC'],
-    'SD / SD Vendor': ['SD','SDV'],
-    'HO / HO Vendor': ['HO','HOI','HOV'],
-    'DCPL': ['DCPLI'],
-    'Vendor Others': ['HTV','HCV','BLV'],
-    'READY': ['READY'],
-    'STORES': ['STORES'],
-    'STOCK': ['STOCK'],
-  };
-  const groupCounts = Object.entries(STAGE_GROUPS).map(([grp,codes])=>{
-    const count = filtered.filter(r=>codes.some(c=>r.currentStage===c||r.currentStage===c.toLowerCase())).length;
-    return {grp,count};
-  }).filter(g=>g.count>0);
+  const stageEntries = stages.map(([stage,count])=>({stage,count}));
+  const maxStageCount = stageEntries.length > 0 ? Math.max(...stageEntries.map(s=>s.count)) : 1;
 
   return (
     <div>
       <div className="section-title">Stage / WIP <span>Analysis</span><div className="section-line"/></div>
       <div className="kpi-grid">
-        <KPICard label="LATHE / M1" value={filtered.filter(r=>['LATHE','M1'].includes(r.currentStage)).length} sub="items in machining" color1="#ff3d5a" color2="#ff6b35"/>
-        <KPICard label="HEAT TREAT / SZ" value={filtered.filter(r=>['HT','HTI','SZ'].includes(r.currentStage)).length} sub="items in HT/SZ" color1="#ff6b35" color2="#ffd60a"/>
-        <KPICard label="CG / SG" value={filtered.filter(r=>['CG','CGI','SG'].includes(r.currentStage)).length} sub="cylindrical/surface grinding" color1="#ffd60a" color2="#00c9ff"/>
-        <KPICard label="VA (VERIFICATION)" value={filtered.filter(r=>r.currentStage==='VA').length} sub="items in final verification" color1="#b24bff" color2="#ff6b35"/>
-        <KPICard label="WITH VENDOR" value={filtered.filter(r=>r.inhouse==='VENDOR').length} sub="items at vendor" color1="#b24bff" color2="#ff3d5a"/>
-        <KPICard label="QC CHECK" value={filtered.filter(r=>r.currentStage==='QC').length} sub="in quality control" color1="#00c9ff" color2="#00ff9d"/>
+        {stageEntries.map(s => (
+          <KPICard
+            key={s.stage}
+            label={s.stage}
+            value={s.count}
+            sub={`items in ${s.stage}`}
+            color1={getStageColor(s.stage)}
+            color2="#7ba7cc"
+          />
+        ))}
       </div>
       <div className="chart-grid">
         <div className="chart-card">
@@ -2085,16 +2071,16 @@ function WIPPage({kpis, filtered}) {
           <div className="chart-wrap-lg"><canvas ref={wipRef}/></div>
         </div>
         <div className="chart-card">
-          <div className="chart-title">Stage Group Summary</div>
-          <div className="chart-sub">GROUPED WORKFLOW STAGES</div>
+          <div className="chart-title">Stage Summary</div>
+          <div className="chart-sub">INDIVIDUAL STAGES ONLY — NO COMBINED GROUPS</div>
           <div className="vendor-bar-wrap" style={{marginTop:8}}>
-            {groupCounts.map(g=>(
-              <div className="vendor-row" key={g.grp}>
-                <div className="vendor-name">{g.grp}</div>
+            {stageEntries.map(s=>(
+              <div className="vendor-row" key={s.stage}>
+                <div className="vendor-name">{s.stage}</div>
                 <div className="vendor-bar-bg">
-                  <div className="vendor-bar-fill" style={{width:`${Math.min(100,g.count/Math.max(...groupCounts.map(x=>x.count))*100)}%`,background:'linear-gradient(90deg,#00c9ff,#b24bff)'}}/>
+                  <div className="vendor-bar-fill" style={{width:`${Math.min(100,(s.count/maxStageCount)*100)}%`,background:'linear-gradient(90deg,#00c9ff,#b24bff)'}}/>
                 </div>
-                <div className="vendor-val">{g.count}</div>
+                <div className="vendor-val">{s.count}</div>
               </div>
             ))}
           </div>
